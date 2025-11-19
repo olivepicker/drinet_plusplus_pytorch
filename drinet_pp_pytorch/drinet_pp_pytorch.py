@@ -3,37 +3,73 @@ import torch.nn.functional as F
 import spconv.pytorch as spconv
 import torch.nn as nn
 
+# class SparseResBlock(nn.Module):
+#     def __init__(self, channels=64,kernel_size=3, bn_momentum=0.1):
+#         super().__init__()
+#         self.conv1 = spconv.SubMConv3d(channels, channels, kernel_size=kernel_size, padding=1, bias=False)
+#         self.bn1   = nn.BatchNorm1d(channels, momentum=bn_momentum)
+#         self.conv2 = spconv.SubMConv3d(channels, channels, kernel_size=kernel_size, padding=1, bias=False)
+#         self.bn2   = nn.BatchNorm1d(channels, momentum=bn_momentum)
+#         self.act   = nn.LeakyReLU(0.01, inplace=True)
+
+#     def forward(self, x: spconv.SparseConvTensor):
+#         identity = x.features
+
+#         out = self.conv1(x)
+#         out = out.replace_feature(self.act(self.bn1(out.features)))
+#         out = self.conv2(out)
+#         out = out.replace_feature(self.bn2(out.features))
+#         out = out.replace_feature(self.act(out.features + identity))
+
+#         return out
+
+class SparseConvBlock(nn.Module):
+    def __init__(self, in_channels=64, out_channels=64, kernel_size=3, bn_momentum=0.1):
+        super().__init__()
+        self.conv1 = spconv.SubMConv3d(in_channels, out_channels, kernel_size=kernel_size, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm1d(out_channels, momentum=bn_momentum)
+        self.act   = nn.LeakyReLU(0.01, inplace=True)
+
+    def forward(self, x: spconv.SparseConvTensor):
+        out = self.conv1(x)
+        out = out.replace_feature(self.act(self.bn1(out.features)))
+        return out
+
 class SFEBlock(nn.Module):
     def __init__(self, in_channels=64, out_channels=64, kernel_size=3, bn_momentum=0.1):
         super().__init__()
-        assert in_channels == out_channels, "SpconvSFEBlock assumes in_channels == out_channels for residual connection."
-
-        mid_channels = in_channels
-        
-        self.net = spconv.SparseSequential(
-            spconv.SubMConv3d(
-                in_channels, mid_channels, kernel_size=1, padding=0, bias=False, indice_key="subm1"
-            ),
-            nn.BatchNorm1d(mid_channels, momentum=bn_momentum),
-            nn.LeakyReLU(negative_slope=0.1, inplace=True),
-
-            spconv.SubMConv3d(
-                mid_channels, mid_channels, kernel_size=kernel_size, padding=1, bias=False, indice_key="subm2"
-            ),
-            nn.BatchNorm1d(mid_channels, momentum=bn_momentum),
-            nn.LeakyReLU(negative_slope=0.1, inplace=True),
-
-            spconv.SubMConv3d(
-                mid_channels, out_channels, kernel_size=1, padding=0, bias=False, indice_key="subm3"
-            ),
-            nn.BatchNorm1d(out_channels, momentum=bn_momentum),
+        assert in_channels == out_channels, "SpconvSFEBlock assumes in_channels == out_channels for residual connection."        
+        self.block0 = spconv.SparseSequential(
+            SparseConvBlock(in_channels, out_channels, 1),
+            SparseConvBlock(in_channels, out_channels, 3),
+            SparseConvBlock(in_channels, out_channels, 1),
         )
+        self.block1 = spconv.SparseSequential(
+            SparseConvBlock(in_channels, out_channels, 1),
+            SparseConvBlock(in_channels, out_channels, 3),
+            SparseConvBlock(in_channels, out_channels, 1),
+        )
+        self.block2 = spconv.SparseSequential(
+            SparseConvBlock(in_channels, out_channels, 1),
+            SparseConvBlock(in_channels, out_channels, 3),
+            SparseConvBlock(in_channels, out_channels, 1),
+        )    
+        self.block3 = spconv.SparseSequential(
+            SparseConvBlock(in_channels, out_channels, 1),
+            SparseConvBlock(in_channels, out_channels, 3),
+            SparseConvBlock(in_channels, out_channels, 1),
+        )    
+
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 
     def forward(self, x: spconv.SparseConvTensor):
-        out = self.net(x)
+        out = self.block0(x)
+        out = self.block1(out)
+        out = self.block2(out)
+        out = self.block3(out)
         out = out.replace_feature(out.features + x.features)
         out = out.replace_feature(self.lrelu(out.features))
+
         return out
 
 class MultiScaleSparseProjection(nn.Module):
@@ -143,17 +179,86 @@ class SparseGeometryFeatureEnhancement(nn.Module):
 
         return x
 
-#TODO
-class DRINetPlusPlus(nn.Module):
+class DRINetBlock(nn.Module):
     def __init__(
             self, 
             in_channels=64,
             out_channels=64,
-            scales = [2,4,8,16]
+            num_classes=20,
+            scales=[2, 4, 8, 16],
         ):
         super().__init__()
-        self.sfe = SFEBlock(in_channels=in_channels, out_channels=out_channels)
-        self.sgfe = SparseGeometryFeatureEnhancement(in_channels, out_channels, scales)
+        self.sfe  = SFEBlock(in_channels, out_channels)
+        self.sgfe = SparseGeometryFeatureEnhancement(out_channels, out_channels, scales)
+        self.aux_head   = nn.Linear(out_channels, num_classes)
+        self.block_head = nn.Linear(out_channels, num_classes)
+        
+    def forward(self, F: spconv.SparseConvTensor):
 
-    def forward(self, x):
-        pass
+        V = self.sfe(F)
+        aux_voxel_logits = self.aux_head(V.features)  # (M, num_classes)
+        
+        fused  = self.sgfe(V)                         # (M, out_channels)
+        F_new  = V.replace_feature(fused)
+        
+        voxel_logits = self.block_head(F_new.features)  # (M, num_classes)
+
+        return F_new, voxel_logits, aux_voxel_logits
+        
+class DRINetPlusPlus(nn.Module):
+    def __init__(self, in_channels, out_channels, num_blocks=4, num_classes=20, scales=[2,4,8,16]):
+        super().__init__()
+        self.num_blocks  = num_blocks
+        self.num_classes = num_classes
+
+        self.stem = spconv.SparseSequential(
+            spconv.SubMConv3d(1, in_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(in_channels),
+            nn.LeakyReLU(inplace=True),
+        )
+
+        self.blocks = nn.ModuleList([
+            DRINetBlock(in_channels if i == 0 else out_channels,
+                        out_channels,
+                        num_classes,
+                        scales)
+            for i in range(num_blocks)
+        ])
+
+        self.final_mlp = nn.Linear(num_blocks * num_classes, num_classes)
+
+    def forward(self, x: spconv.SparseConvTensor, point2voxel, point_labels=None):
+        F_sparse = self.stem(x)
+        N_valid = point2voxel.size(0)
+
+        if point_labels is not None:
+            assert point_labels.size(0) == N_valid, \
+                f"point_labels({point_labels.size(0)}) and point2voxel({N_valid}) must have same length."
+
+        block_outputs = []
+        aux_loss = 0.0
+        F_cur = F_sparse
+
+        for b, block in enumerate(self.blocks):
+            print(F_cur)
+            F_cur, voxel_logits_b, aux_voxel_logits_b = block(F_cur)  # voxel_logits_b: (M,C)
+
+            voxel_idx = point2voxel                   # (N_valid,)
+            point_logits_b = voxel_logits_b[voxel_idx]   # (N_valid, num_classes)
+            block_outputs.append(point_logits_b)
+
+            if self.training and point_labels is not None:
+                aux_point_logits_b = aux_voxel_logits_b[voxel_idx]   # (N_valid,C)
+                aux_loss += F.cross_entropy(aux_point_logits_b, point_labels, ignore_index=0)
+
+        L = torch.stack(block_outputs, dim=1)   # (N_valid, B, num_classes)
+        N_valid, B, C = L.shape
+        L_flat = L.reshape(N_valid, B * C)
+        final_logits_valid = self.final_mlp(L_flat)  # (N_valid, num_classes)
+
+        if self.training and point_labels is not None:
+            final_loss = F.cross_entropy(final_logits_valid, point_labels, ignore_index=0)
+            total_loss = final_loss + 0.4 * aux_loss
+            return final_logits_valid, total_loss
+
+        return final_logits_valid
