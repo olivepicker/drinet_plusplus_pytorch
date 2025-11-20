@@ -1,5 +1,6 @@
 # ext
 *.ipynb
+*.pth
 
 # folder
 data

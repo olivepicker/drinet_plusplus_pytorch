@@ -175,7 +175,7 @@ class AttentiveMultiScaleFusion(nn.Module):
 class SparseGeometryFeatureEnhancement(nn.Module):
     def __init__(self, channels, scales):
         super().__init__()
-        self.msp = MultiScaleSparseProjection(channels, channels, scales)
+        self.msp = MultiScaleSparseProjection(channels, scales)
         self.amf = AttentiveMultiScaleFusion(channels, len(scales))
     
     def forward(self, x):
@@ -192,8 +192,8 @@ class DRINetBlock(nn.Module):
             scales=[2, 4, 8, 16],
         ):
         super().__init__()
-        self.sfe        = SFEBlock(channels, channels)
-        self.sgfe       = SparseGeometryFeatureEnhancement(channels, channels, scales)
+        self.sfe        = SFEBlock(channels)
+        self.sgfe       = SparseGeometryFeatureEnhancement(channels, scales)
         self.aux_head   = nn.Linear(channels, num_classes)
         self.block_head = nn.Linear(channels, num_classes)
         
@@ -234,7 +234,7 @@ class DRINetPlusPlus(nn.Module):
                 num_classes,
                 scales
             )
-            for i in range(num_blocks)
+            for _ in range(num_blocks)
         ])
 
         self.final_mlp = nn.Linear(num_blocks * num_classes, num_classes)
@@ -268,7 +268,7 @@ class DRINetPlusPlus(nn.Module):
         L_flat = L.reshape(N_valid, B * C)
         final_logits_valid = self.final_mlp(L_flat)  # (N_valid, num_classes)
 
-        if self.training and point_labels is not None:
+        if point_labels is not None:
             final_loss = F.cross_entropy(final_logits_valid, point_labels, ignore_index=0)
             total_loss = final_loss + self.aux_loss_ratio * aux_loss
             return final_logits_valid, total_loss
