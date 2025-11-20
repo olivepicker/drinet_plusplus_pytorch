@@ -24,7 +24,13 @@ import torch.nn as nn
 #         return out
 
 class SparseConvBlock(nn.Module):
-    def __init__(self, in_channels=64, out_channels=64, kernel_size=3, bn_momentum=0.1):
+    def __init__(
+        self, 
+        in_channels=64,
+        out_channels=64,
+        kernel_size=3,
+        bn_momentum=0.1
+    ):
         super().__init__()
         self.conv1 = spconv.SubMConv3d(in_channels, out_channels, kernel_size=kernel_size, padding=1, bias=False)
         self.bn1   = nn.BatchNorm1d(out_channels, momentum=bn_momentum)
@@ -36,28 +42,27 @@ class SparseConvBlock(nn.Module):
         return out
 
 class SFEBlock(nn.Module):
-    def __init__(self, in_channels=64, out_channels=64, kernel_size=3, bn_momentum=0.1):
+    def __init__(self, channels=64, kernel_size=3, bn_momentum=0.1):
         super().__init__()
-        assert in_channels == out_channels, "SpconvSFEBlock assumes in_channels == out_channels for residual connection."        
-        self.block0 = spconv.SparseSequential(
-            SparseConvBlock(in_channels, out_channels, 1),
-            SparseConvBlock(in_channels, out_channels, 3),
-            SparseConvBlock(in_channels, out_channels, 1),
+        self.block0 = nn.Sequential(
+            SparseConvBlock(channels, channels, 1),
+            SparseConvBlock(channels, channels, 3),
+            SparseConvBlock(channels, channels, 1),
         )
-        self.block1 = spconv.SparseSequential(
-            SparseConvBlock(in_channels, out_channels, 1),
-            SparseConvBlock(in_channels, out_channels, 3),
-            SparseConvBlock(in_channels, out_channels, 1),
+        self.block1 = nn.Sequential(
+            SparseConvBlock(channels, channels, 1),
+            SparseConvBlock(channels, channels, 3),
+            SparseConvBlock(channels, channels, 1),
         )
-        self.block2 = spconv.SparseSequential(
-            SparseConvBlock(in_channels, out_channels, 1),
-            SparseConvBlock(in_channels, out_channels, 3),
-            SparseConvBlock(in_channels, out_channels, 1),
+        self.block2 = nn.Sequential(
+            SparseConvBlock(channels, channels, 1),
+            SparseConvBlock(channels, channels, 3),
+            SparseConvBlock(channels, channels, 1),
         )    
-        self.block3 = spconv.SparseSequential(
-            SparseConvBlock(in_channels, out_channels, 1),
-            SparseConvBlock(in_channels, out_channels, 3),
-            SparseConvBlock(in_channels, out_channels, 1),
+        self.block3 = nn.Sequential(
+            SparseConvBlock(channels, channels, 1),
+            SparseConvBlock(channels, channels, 3),
+            SparseConvBlock(channels, channels, 1),
         )    
 
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
@@ -73,13 +78,13 @@ class SFEBlock(nn.Module):
         return out
 
 class MultiScaleSparseProjection(nn.Module):
-    def __init__(self, in_channels, out_channels=None, scales=[2,4,8,16]):
+    def __init__(
+        self, 
+        channels, 
+        scales=[2,4,8,16]
+    ):
         super().__init__()
         self.scales = scales
-        C = in_channels
-        if out_channels is None:
-            out_channels = C
-        self.out_channels = out_channels
 
         self.gates = nn.ModuleList()
         self.projs = nn.ModuleList()
@@ -87,17 +92,17 @@ class MultiScaleSparseProjection(nn.Module):
         for _ in self.scales:
             self.gates.append(
                 nn.Sequential(
-                    nn.Linear(C, C),
-                    nn.BatchNorm1d(C),
+                    nn.Linear(channels, channels),
+                    nn.BatchNorm1d(channels),
                     nn.LeakyReLU(inplace=True),
-                    nn.Linear(C, C),
+                    nn.Linear(channels, channels),
                     nn.Sigmoid(),
                 )
             )
             self.projs.append(
                 nn.Sequential(
-                    nn.Linear(C, out_channels),
-                    nn.BatchNorm1d(out_channels),
+                    nn.Linear(channels, channels),
+                    nn.BatchNorm1d(channels),
                     nn.LeakyReLU(inplace=True),
                 )
             )
@@ -140,18 +145,18 @@ class MultiScaleSparseProjection(nn.Module):
         return ms_feat
 
 class AttentiveMultiScaleFusion(nn.Module):
-    def __init__(self, in_channels, num_scales=4):
+    def __init__(self, channels, num_scales=4):
         super().__init__()
         self.attn = nn.ModuleList()
         for _ in range(num_scales):
             self.attn.append(
                 nn.Sequential(
-                    nn.Linear(in_channels, in_channels),
-                    nn.BatchNorm1d(in_channels),
+                    nn.Linear(channels, channels),
+                    nn.BatchNorm1d(channels),
                     nn.Sigmoid()
                 )
             )
-        self.head = nn.Linear(in_channels, in_channels)
+        self.head = nn.Linear(channels, channels)
 
     def forward(self, x):
         sum_x = torch.sum(x, dim=1)
@@ -168,10 +173,10 @@ class AttentiveMultiScaleFusion(nn.Module):
         return out
 
 class SparseGeometryFeatureEnhancement(nn.Module):
-    def __init__(self, in_channels, out_channels, scales):
+    def __init__(self, channels, scales):
         super().__init__()
-        self.msp = MultiScaleSparseProjection(in_channels, out_channels, scales)
-        self.amf = AttentiveMultiScaleFusion(in_channels, len(scales))
+        self.msp = MultiScaleSparseProjection(channels, channels, scales)
+        self.amf = AttentiveMultiScaleFusion(channels, len(scales))
     
     def forward(self, x):
         x = self.msp(x)
@@ -182,50 +187,58 @@ class SparseGeometryFeatureEnhancement(nn.Module):
 class DRINetBlock(nn.Module):
     def __init__(
             self, 
-            in_channels=64,
-            out_channels=64,
+            channels=64,
             num_classes=20,
             scales=[2, 4, 8, 16],
         ):
         super().__init__()
-        self.sfe  = SFEBlock(in_channels, out_channels)
-        self.sgfe = SparseGeometryFeatureEnhancement(out_channels, out_channels, scales)
-        self.aux_head   = nn.Linear(out_channels, num_classes)
-        self.block_head = nn.Linear(out_channels, num_classes)
+        self.sfe        = SFEBlock(channels, channels)
+        self.sgfe       = SparseGeometryFeatureEnhancement(channels, channels, scales)
+        self.aux_head   = nn.Linear(channels, num_classes)
+        self.block_head = nn.Linear(channels, num_classes)
         
-    def forward(self, F: spconv.SparseConvTensor):
-
-        V = self.sfe(F)
+    def forward(self, x: spconv.SparseConvTensor):
+        V = self.sfe(x)
         aux_voxel_logits = self.aux_head(V.features)  # (M, num_classes)
         
         fused  = self.sgfe(V)                         # (M, out_channels)
-        F_new  = V.replace_feature(fused)
+        x_new  = V.replace_feature(fused)
         
-        voxel_logits = self.block_head(F_new.features)  # (M, num_classes)
+        voxel_logits = self.block_head(x_new.features)  # (M, num_classes)
 
-        return F_new, voxel_logits, aux_voxel_logits
+        return x_new, voxel_logits, aux_voxel_logits
         
 class DRINetPlusPlus(nn.Module):
-    def __init__(self, in_channels, out_channels, num_blocks=4, num_classes=20, scales=[2,4,8,16]):
+    def __init__(
+        self, 
+        in_channels=1, 
+        out_channels=64, 
+        num_blocks=4, 
+        num_classes=20, 
+        scales=[2,4,8,16],
+        aux_loss_ratio=0.4
+    ):
         super().__init__()
         self.num_blocks  = num_blocks
         self.num_classes = num_classes
 
         self.stem = spconv.SparseSequential(
-            spconv.SubMConv3d(1, in_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(in_channels),
+            spconv.SubMConv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(out_channels),
             nn.LeakyReLU(inplace=True),
         )
 
         self.blocks = nn.ModuleList([
-            DRINetBlock(in_channels if i == 0 else out_channels,
-                        out_channels,
-                        num_classes,
-                        scales)
+            DRINetBlock(
+                out_channels,
+                num_classes,
+                scales
+            )
             for i in range(num_blocks)
         ])
 
         self.final_mlp = nn.Linear(num_blocks * num_classes, num_classes)
+        self.aux_loss_ratio = aux_loss_ratio
 
     def forward(self, x: spconv.SparseConvTensor, point2voxel, point_labels=None):
         F_sparse = self.stem(x)
@@ -238,9 +251,8 @@ class DRINetPlusPlus(nn.Module):
         block_outputs = []
         aux_loss = 0.0
         F_cur = F_sparse
-
+        
         for b, block in enumerate(self.blocks):
-            print(F_cur)
             F_cur, voxel_logits_b, aux_voxel_logits_b = block(F_cur)  # voxel_logits_b: (M,C)
 
             voxel_idx = point2voxel                   # (N_valid,)
@@ -258,7 +270,7 @@ class DRINetPlusPlus(nn.Module):
 
         if self.training and point_labels is not None:
             final_loss = F.cross_entropy(final_logits_valid, point_labels, ignore_index=0)
-            total_loss = final_loss + 0.4 * aux_loss
+            total_loss = final_loss + self.aux_loss_ratio * aux_loss
             return final_logits_valid, total_loss
 
         return final_logits_valid
