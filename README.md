@@ -2,6 +2,10 @@
 
 Unofficial implementation proposed [DRINet++](https://arxiv.org/abs/2111.08318) from Ye et al.
 
+## Todo
+- [ ] Evaluate on the test dataset
+- [ ] Train / Inference code
+
 ## Citations
 
 ```bibtex
