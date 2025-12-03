@@ -94,3 +94,121 @@ def build_semantickitti_index(root_dir: str, split_dict: dict) -> pd.DataFrame:
 
     df = pd.DataFrame.from_records(records)
     return df
+
+def voxelize_full(points, feats, voxel_size, batch_idx: int = 0, margin: float = 0.01):
+    device = points.device
+    voxel_size = torch.tensor(voxel_size, dtype=torch.float32, device=device)  # (3,)
+
+    xyz_min = points.min(dim=0).values - margin  # (3,)
+    xyz_max = points.max(dim=0).values + margin  # (3,)
+
+    grid_size = torch.floor((xyz_max - xyz_min) / voxel_size).long()  # (3,)
+    nx, ny, nz = grid_size[0].item(), grid_size[1].item(), grid_size[2].item()
+    spatial_shape = [nz, ny, nx]  # spconv는 [Z,Y,X]
+
+    coors_xyz = torch.floor((points - xyz_min) / voxel_size).long()  # (N,3)
+
+    valid_mask = ((coors_xyz >= 0) & (coors_xyz < grid_size)).all(dim=1)  # (N,)
+    if valid_mask.sum() == 0:
+        raise ValueError("No points fall inside computed dynamic range.")
+
+    points_kept = points[valid_mask]   # (N_kept,3)
+    feats_kept  = feats[valid_mask]    # (N_kept,C)
+    coors_xyz   = coors_xyz[valid_mask]# (N_kept,3)
+
+    coors_zxy = torch.stack(
+        [coors_xyz[:, 2], coors_xyz[:, 1], coors_xyz[:, 0]], dim=1
+    )  # (N_kept,3)
+
+    unique_coords, point2voxel_kept = torch.unique(
+        coors_zxy, dim=0, return_inverse=True
+    )  # (M,3), (N_kept,)
+
+    M = unique_coords.size(0)
+    C = feats_kept.size(1)
+
+    v_feats = torch.zeros((M, C), dtype=feats_kept.dtype, device=device)
+    index_expand = point2voxel_kept.view(-1, 1).expand(-1, C)
+    v_feats.scatter_add_(0, index_expand, feats_kept)  # (M,C)
+
+    counts = torch.bincount(point2voxel_kept, minlength=M).float().view(-1, 1).to(device)
+    v_feats = v_feats / counts
+
+    batch_col = torch.full((M, 1), batch_idx, dtype=torch.int32, device=device)
+    v_coords = torch.cat([batch_col, unique_coords.to(torch.int32)], dim=1)  # (M,4)
+
+    N = points.size(0)
+    point2voxel = torch.zeros(N, dtype=torch.long, device=device)
+    point2voxel[valid_mask] = point2voxel_kept
+
+    return {
+        "v_feats": v_feats,             # (M,C)
+        "v_coords": v_coords,           # (M,4)
+        "spatial_shape": spatial_shape, # [Z,Y,X]
+        "point2voxel": point2voxel,     # (N,)
+        "point_mask": valid_mask,       # (N,)
+        "points_kept": points_kept,     # optional
+    }
+
+def lovasz_grad(gt_sorted):
+    p = gt_sorted.numel()
+    if p == 0:
+        return gt_sorted
+
+    gts = gt_sorted.sum()
+    intersection = gts - torch.cumsum(gt_sorted, dim=0)
+    union = gts + torch.cumsum(1.0 - gt_sorted, dim=0)
+    jaccard = 1.0 - intersection / union
+
+    if p > 1:
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+    return jaccard
+
+
+def flatten_probas(probas, labels, ignore_index=None):
+    if probas.dim() != 2:
+        probas = probas.view(-1, probas.size(-1))  # (N, C)
+    labels = labels.view(-1)
+
+    if ignore_index is None:
+        return probas, labels, None
+
+    valid = (labels != ignore_index)
+    if valid.sum() == 0:
+        return probas.new_empty((0, probas.size(1))), labels.new_empty((0,)), valid
+
+    return probas[valid], labels[valid], valid
+
+
+def lovasz_softmax_flat(probas, labels, classes='present'):
+    C = probas.size(1)
+    losses = []
+
+    for c in range(C):
+        if classes == 'present' and (labels == c).sum() == 0:
+            continue
+
+        fg = (labels == c).float()        # (P,)
+        if fg.sum() == 0:
+            continue
+
+        p_c = probas[:, c]
+        errors = (fg - p_c).abs()
+
+        errors_sorted, idx = torch.sort(errors, descending=True)
+        fg_sorted = fg[idx]
+
+        grad = lovasz_grad(fg_sorted)
+        loss_c = torch.dot(errors_sorted, grad)
+        losses.append(loss_c)
+
+    if len(losses) == 0:
+        return probas.new_tensor(0.0)
+    return torch.mean(torch.stack(losses))
+
+
+def lovasz_softmax(probas, labels, ignore_index=None):
+    probas_flat, labels_flat, _ = flatten_probas(probas, labels, ignore_index)
+    if labels_flat.numel() == 0:
+        return probas_flat.new_tensor(0.0)
+    return lovasz_softmax_flat(probas_flat, labels_flat, classes='present')

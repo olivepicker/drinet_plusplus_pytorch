@@ -7,7 +7,7 @@ import torch
 
 from tqdm.auto import tqdm
 
-from utils import voxelize, build_semantickitti_index
+from utils import voxelize, voxelize_full, build_semantickitti_index
 from dataset import SemanticKITTIDataset
 from drinet_plusplus_pytorch import DRINetPlusPlus
 
@@ -58,7 +58,7 @@ def run_inference_and_save(
     os.makedirs(out_root, exist_ok=True)
 
     index_df = build_semantickitti_index(root_dir, SEMANTICKITTI_SPLIT)
-    test_df = index_df[index_df["split"] == "test"].reset_index(drop=True).sample(500)
+    test_df = index_df[index_df["split"] == "test"].reset_index(drop=True)#.sample(500)
     print("Test samples:", len(test_df))
 
     test_dataset = SemanticKITTIDataset(
@@ -91,11 +91,10 @@ def run_inference_and_save(
             feats  = sample["feats"].to(device)    # (N,C)
             N = points.size(0)
 
-            vox = voxelize(
+            vox = voxelize_full(
                 points=points,
                 feats=feats,
                 voxel_size=voxel_size,
-                point_range=point_range,
                 batch_idx=0,
             )
 
@@ -105,6 +104,8 @@ def run_inference_and_save(
             point2voxel   = vox["point2voxel"]      # (N_kept,)
             point_mask    = vox["point_mask"]       # (N,)
 
+            point2voxel_kept = point2voxel[point_mask] 
+            
             sp_tensor = spconv.SparseConvTensor(
                 features      = v_feats,
                 indices       = v_coords,
@@ -113,7 +114,7 @@ def run_inference_and_save(
             )
 
             # forward
-            logits = model(sp_tensor, point2voxel)   # (N_kept, num_classes)
+            logits = model(sp_tensor, point2voxel_kept)   # (N_kept, num_classes)
             preds_train = logits.argmax(dim=1)       # (N_kept,)
 
             preds_full_train = torch.zeros(N, dtype=torch.long, device=device)
@@ -137,7 +138,7 @@ def run_inference_and_save(
 
 if __name__ == '__main__':
     root_dir  = "data/dataset/"
-    ckpt_path = "weight/drinetpp_best_mIoU_epoch48.pth"
+    ckpt_path = "weight/drinetpp_best_mIoU.pth"
     out_root  = "data/output/"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

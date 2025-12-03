@@ -149,3 +149,64 @@ def make_collate_fn(voxel_size, point_range, device="cpu"):
         return batch_out
 
     return collate_fn
+
+
+def collate_fn_full(batch, voxel_size, device="cpu"):
+    """
+    batch: list of samples from SemanticKITTIDataset
+           each sample: {"points", "feats", "labels", "sequence", "frame"}
+    """
+    all_v_feats = []
+    all_v_coords = []
+    all_point_labels = []
+    all_point2voxel = []
+    spatial_shapes = []
+    batch_offsets = []
+
+    voxel_offset = 0
+    batch_size = len(batch)
+
+    for b_idx, sample in enumerate(batch):
+        points = sample["points"].to(device)  # (N,3)
+        feats  = sample["feats"].to(device)   # (N,C)
+        labels = sample["labels"].to(device)  # (N,)
+
+        vox = voxelize_full(
+            points=points,
+            feats=feats,
+            voxel_size=voxel_size,
+            batch_idx=b_idx,
+        )
+
+        v_feats       = vox["v_feats"]       # (M,C)
+        v_coords      = vox["v_coords"]      # (M,4)
+        spatial_shape = vox["spatial_shape"] # [Z,Y,X]
+        point2voxel   = vox["point2voxel"]   # (N,)
+        point_mask    = vox["point_mask"]    # (N,)
+
+        # SparseConvTensor용
+        all_v_feats.append(v_feats)
+        all_v_coords.append(v_coords)
+
+        spatial_shapes.append(spatial_shape)
+
+        # point label / mapping (전체 N 기준, 그냥 concat)
+        all_point_labels.append(labels)          # (N,)
+        all_point2voxel.append(point2voxel + voxel_offset)  # voxel index에 offset 부여
+
+        voxel_offset += v_feats.size(0)
+
+    v_feats_batch  = torch.cat(all_v_feats, dim=0)  # (sum_M, C)
+    v_coords_batch = torch.cat(all_v_coords, dim=0) # (sum_M, 4)
+    point_labels_batch = torch.cat(all_point_labels, dim=0)   # (sum_N,)
+    point2voxel_batch  = torch.cat(all_point2voxel, dim=0)    # (sum_N,)
+
+    batch_dict = {
+        "v_feats": v_feats_batch,
+        "v_coords": v_coords_batch,
+        "spatial_shape": spatial_shapes[0],  # batch_size=1 가정
+        "batch_size": batch_size,
+        "point_labels": point_labels_batch,
+        "point2voxel": point2voxel_batch,
+    }
+    return batch_dict

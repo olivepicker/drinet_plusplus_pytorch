@@ -3,6 +3,8 @@ import torch.nn.functional as F
 import spconv.pytorch as spconv
 import torch.nn as nn
 
+from utils import lovasz_softmax
+
 # class SparseResBlock(nn.Module):
 #     def __init__(self, channels=64,kernel_size=3, bn_momentum=0.1):
 #         super().__init__()
@@ -253,23 +255,40 @@ class DRINetPlusPlus(nn.Module):
         F_cur = F_sparse
         
         for b, block in enumerate(self.blocks):
-            F_cur, voxel_logits_b, aux_voxel_logits_b = block(F_cur)  # voxel_logits_b: (M,C)
+            F_cur, voxel_logits_b, aux_voxel_logits_b = block(F_cur)
 
-            voxel_idx = point2voxel                   # (N_valid,)
-            point_logits_b = voxel_logits_b[voxel_idx]   # (N_valid, num_classes)
+            voxel_idx = point2voxel
+            point_logits_b = voxel_logits_b[voxel_idx]
             block_outputs.append(point_logits_b)
 
             if self.training and point_labels is not None:
-                aux_point_logits_b = aux_voxel_logits_b[voxel_idx]   # (N_valid,C)
-                aux_loss += F.cross_entropy(aux_point_logits_b, point_labels, ignore_index=0)
+                aux_point_logits_b = aux_voxel_logits_b[voxel_idx]
+                aux_loss = aux_loss + F.cross_entropy(
+                    aux_point_logits_b,
+                    point_labels,
+                    ignore_index=0,
+                )
 
-        L = torch.stack(block_outputs, dim=1)   # (N_valid, B, num_classes)
+        L = torch.stack(block_outputs, dim=1)
         N_valid, B, C = L.shape
         L_flat = L.reshape(N_valid, B * C)
-        final_logits_valid = self.final_mlp(L_flat)  # (N_valid, num_classes)
+        final_logits_valid = self.final_mlp(L_flat)
 
         if point_labels is not None:
-            final_loss = F.cross_entropy(final_logits_valid, point_labels, ignore_index=0)
+            ce_loss = F.cross_entropy(
+                final_logits_valid,
+                point_labels,
+                ignore_index=0,
+            )
+
+            probs = F.softmax(final_logits_valid, dim=1)
+            lovasz_loss = lovasz_softmax(
+                probs,
+                point_labels,
+                ignore_index=0,
+            )
+
+            final_loss = ce_loss + lovasz_loss
             total_loss = final_loss + self.aux_loss_ratio * aux_loss
             return final_logits_valid, total_loss
 
