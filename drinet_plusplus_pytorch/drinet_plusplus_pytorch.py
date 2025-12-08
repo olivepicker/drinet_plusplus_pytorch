@@ -5,26 +5,6 @@ import torch.nn as nn
 
 from utils import lovasz_softmax
 
-# class SparseResBlock(nn.Module):
-#     def __init__(self, channels=64,kernel_size=3, bn_momentum=0.1):
-#         super().__init__()
-#         self.conv1 = spconv.SubMConv3d(channels, channels, kernel_size=kernel_size, padding=1, bias=False)
-#         self.bn1   = nn.BatchNorm1d(channels, momentum=bn_momentum)
-#         self.conv2 = spconv.SubMConv3d(channels, channels, kernel_size=kernel_size, padding=1, bias=False)
-#         self.bn2   = nn.BatchNorm1d(channels, momentum=bn_momentum)
-#         self.act   = nn.LeakyReLU(0.01, inplace=True)
-
-#     def forward(self, x: spconv.SparseConvTensor):
-#         identity = x.features
-
-#         out = self.conv1(x)
-#         out = out.replace_feature(self.act(self.bn1(out.features)))
-#         out = self.conv2(out)
-#         out = out.replace_feature(self.bn2(out.features))
-#         out = out.replace_feature(self.act(out.features + identity))
-
-#         return out
-
 class SparseConvBlock(nn.Module):
     def __init__(
         self, 
@@ -34,7 +14,8 @@ class SparseConvBlock(nn.Module):
         bn_momentum=0.1
     ):
         super().__init__()
-        self.conv1 = spconv.SubMConv3d(in_channels, out_channels, kernel_size=kernel_size, padding=1, bias=False)
+        padding = kernel_size // 2
+        self.conv1 = spconv.SubMConv3d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=False)
         self.bn1   = nn.BatchNorm1d(out_channels, momentum=bn_momentum)
         self.act   = nn.LeakyReLU(0.01, inplace=True)
 
@@ -138,9 +119,11 @@ class MultiScaleSparseProjection(nn.Module):
             V = V / counts
             V_up = V[inv]
             Os = feats - V_up
-            Os = Os * feats
 
-            Os_proj = self.projs[i](Os)      # (M,C_out)
+            gate = self.gates[i](Os)
+            gated = gate * feats
+
+            Os_proj = self.projs[i](gated)    # (M,C)
             ms_outputs.append(Os_proj)
 
         ms_feat = torch.stack(ms_outputs, dim=1)  # (M,S,C_out)
@@ -171,7 +154,7 @@ class AttentiveMultiScaleFusion(nn.Module):
             L.append(o)
 
         out = torch.sum(torch.stack(L, dim=-1), dim=-1)
-
+        out = self.head(out)
         return out
 
 class SparseGeometryFeatureEnhancement(nn.Module):
