@@ -24,51 +24,37 @@ class SparseConvBlock(nn.Module):
         out = out.replace_feature(self.act(self.bn1(out.features)))
         return out
 
-class SFEBlock(nn.Module):
-    def __init__(self, channels=64, kernel_size=3, bn_momentum=0.1):
+class SparseResNetBottleneck(nn.Module):
+    def __init__(self, channels, kernel_size=3, bn_momentum=0.1):
         super().__init__()
-        self.block0 = nn.Sequential(
-            SparseConvBlock(channels, channels, 1),
-            SparseConvBlock(channels, channels, 3),
-            SparseConvBlock(channels, channels, 1),
-        )
-        self.block1 = nn.Sequential(
-            SparseConvBlock(channels, channels, 1),
-            SparseConvBlock(channels, channels, 3),
-            SparseConvBlock(channels, channels, 1),
-        )
-        self.block2 = nn.Sequential(
-            SparseConvBlock(channels, channels, 1),
-            SparseConvBlock(channels, channels, 3),
-            SparseConvBlock(channels, channels, 1),
-        )    
-        self.block3 = nn.Sequential(
-            SparseConvBlock(channels, channels, 1),
-            SparseConvBlock(channels, channels, 3),
-            SparseConvBlock(channels, channels, 1),
-        )    
-
-        self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
-
-    def forward(self, x: spconv.SparseConvTensor):
-        out = self.block0(x)
-        out = out.replace_feature(out.features + x.features)
-
-        x1 = out
-        out = self.block1(out)
-        out = out.replace_feature(out.features + x1.features)
+        self.conv1 = SparseConvBlock(channels, channels, 1, bn_momentum)
+        self.conv2 = SparseConvBlock(channels, channels, kernel_size, bn_momentum)
+        self.conv3 = SparseConvBlock(channels, channels, 1, bn_momentum)
         
-        x2 = out
-        out = self.block2(out)
-        out = out.replace_feature(out.features + x2.features)
-        
-        x3 = out
-        out = self.block3(out)
-        
-        out = out.replace_feature(out.features + x.features)
-        out = out.replace_feature(self.lrelu(out.features))
+        self.act = nn.LeakyReLU(0.01, inplace=True)
 
+    def forward(self, x):
+        identity = x
+        
+        out = self.conv1(x)
+        out = self.conv2(out)
+        out = self.conv3(out)
+        
+        out = out.replace_feature(out.features + identity.features)
+        out = out.replace_feature(self.act(out.features))
+        
         return out
+
+class SFEBlock(nn.Module):
+    def __init__(self, channels=64, num_layers=4, bn_momentum=0.1):
+        super().__init__()
+        self.layers = nn.Sequential(*[
+            SparseResNetBottleneck(channels, 3, bn_momentum)
+            for _ in range(num_layers)
+        ])
+
+    def forward(self, x):
+        return self.layers(x)
 
 class MultiScaleSparseProjection(nn.Module):
     def __init__(
