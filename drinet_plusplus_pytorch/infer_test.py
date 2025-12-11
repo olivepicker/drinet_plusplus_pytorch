@@ -76,7 +76,7 @@ def run_inference_and_save(
     model = model.to(device)
 
     ckpt = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(ckpt["model_state"])
+    print(model.load_state_dict(ckpt["model_state"]))
     print(f"Loaded checkpoint from {ckpt_path}, epoch = {ckpt.get('epoch','?')}")
 
     inv_lut = build_inv_lut(device=device)

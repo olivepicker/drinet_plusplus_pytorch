@@ -52,9 +52,19 @@ class SFEBlock(nn.Module):
 
     def forward(self, x: spconv.SparseConvTensor):
         out = self.block0(x)
+        out = out.replace_feature(out.features + x.features)
+
+        x1 = out
         out = self.block1(out)
+        out = out.replace_feature(out.features + x1.features)
+        
+        x2 = out
         out = self.block2(out)
+        out = out.replace_feature(out.features + x2.features)
+        
+        x3 = out
         out = self.block3(out)
+        
         out = out.replace_feature(out.features + x.features)
         out = out.replace_feature(self.lrelu(out.features))
 
@@ -171,11 +181,11 @@ class SparseGeometryFeatureEnhancement(nn.Module):
 
 class DRINetBlock(nn.Module):
     def __init__(
-            self, 
-            channels=64,
-            num_classes=20,
-            scales=[2, 4, 8, 16],
-        ):
+        self, 
+        channels=64,
+        num_classes=20,
+        scales=[2, 4, 8, 16],
+    ):
         super().__init__()
         self.sfe        = SFEBlock(channels)
         self.sgfe       = SparseGeometryFeatureEnhancement(channels, scales)
