@@ -212,3 +212,26 @@ def lovasz_softmax(probas, labels, ignore_index=None):
     if labels_flat.numel() == 0:
         return probas_flat.new_tensor(0.0)
     return lovasz_softmax_flat(probas_flat, labels_flat, classes='present')
+
+
+def make_voxel_labels_majority(point2voxel, point_labels, num_voxels, ignore_index):
+    device = point_labels.device
+    voxel_labels = torch.full((num_voxels,), ignore_index, dtype=point_labels.dtype, device=device)
+
+    mask = (point_labels != ignore_index)
+    if mask.sum() == 0:
+        return voxel_labels
+
+    v = point2voxel[mask]
+    y = point_labels[mask]
+
+    num_classes = int(y.max().item()) + 1
+    flat = v * num_classes + y
+    counts = torch.bincount(flat, minlength=num_voxels * num_classes)
+    counts = counts.view(num_voxels, num_classes)
+
+    winners = counts.argmax(dim=1).to(point_labels.dtype)
+
+    has_any = counts.sum(dim=1) > 0
+    voxel_labels[has_any] = winners[has_any]
+    return voxel_labels

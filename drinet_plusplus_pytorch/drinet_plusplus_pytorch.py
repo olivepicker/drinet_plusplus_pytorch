@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import spconv.pytorch as spconv
 import torch.nn as nn
 
-from utils import lovasz_softmax
+from utils import lovasz_softmax, make_voxel_labels_majority
 
 class SparseConvBlock(nn.Module):
     def __init__(
@@ -241,13 +241,20 @@ class DRINetPlusPlus(nn.Module):
             block_outputs.append(point_logits_b)
 
             if self.training and point_labels is not None:
-                aux_point_logits_b = aux_voxel_logits_b[voxel_idx]
-                aux_loss = aux_loss + F.cross_entropy(
-                    aux_point_logits_b,
-                    point_labels,
+                M = voxel_logits_b.size(0)
+                voxel_labels = make_voxel_labels_majority(
+                    point2voxel=point2voxel,
+                    point_labels=point_labels,
+                    num_voxels=M,
                     ignore_index=0,
                 )
 
+                aux_loss = aux_loss + F.cross_entropy(
+                    aux_voxel_logits_b,
+                    voxel_labels,
+                    ignore_index=0,
+                )
+                
         L = torch.stack(block_outputs, dim=1)
         N_valid, B, C = L.shape
         L_flat = L.reshape(N_valid, B * C)
