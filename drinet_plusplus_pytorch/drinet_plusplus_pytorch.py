@@ -176,7 +176,6 @@ class DRINetBlock(nn.Module):
         self.sfe        = SFEBlock(channels)
         self.sgfe       = SparseGeometryFeatureEnhancement(channels, scales)
         self.aux_head   = nn.Linear(channels, num_classes)
-        self.block_head = nn.Linear(channels, num_classes)
         
     def forward(self, x: spconv.SparseConvTensor):
         V = self.sfe(x)
@@ -185,9 +184,7 @@ class DRINetBlock(nn.Module):
         fused  = self.sgfe(V)                         # (M, out_channels)
         x_new  = V.replace_feature(fused)
         
-        voxel_logits = self.block_head(x_new.features)  # (M, num_classes)
-
-        return x_new, voxel_logits, aux_voxel_logits
+        return x_new, aux_voxel_logits
         
 class DRINetPlusPlus(nn.Module):
     def __init__(
@@ -218,7 +215,7 @@ class DRINetPlusPlus(nn.Module):
             for _ in range(num_blocks)
         ])
 
-        self.final_mlp = nn.Linear(num_blocks * num_classes, num_classes)
+        self.final_mlp = nn.Linear(num_blocks * out_channels, num_classes)
         self.aux_loss_ratio = aux_loss_ratio
 
     def forward(self, x: spconv.SparseConvTensor, point2voxel, point_labels=None):
@@ -229,36 +226,32 @@ class DRINetPlusPlus(nn.Module):
             assert point_labels.size(0) == N_valid, \
                 f"point_labels({point_labels.size(0)}) and point2voxel({N_valid}) must have same length."
 
-        block_outputs = []
+        feature_list = []
         aux_loss = 0.0
         F_cur = F_sparse
         
         for b, block in enumerate(self.blocks):
-            F_cur, voxel_logits_b, aux_voxel_logits_b = block(F_cur)
+            F_cur, aux_voxel_logits_b = block(F_cur)
 
-            voxel_idx = point2voxel
-            point_logits_b = voxel_logits_b[voxel_idx]
-            block_outputs.append(point_logits_b)
+            point_features_b = F_cur.features[point2voxel]
+            feature_list.append(point_features_b)
 
             if self.training and point_labels is not None:
-                M = voxel_logits_b.size(0)
                 voxel_labels = make_voxel_labels_majority(
                     point2voxel=point2voxel,
                     point_labels=point_labels,
-                    num_voxels=M,
+                    num_voxels=aux_voxel_logits_b.size(0),
                     ignore_index=0,
                 )
 
-                aux_loss = aux_loss + F.cross_entropy(
+                aux_loss += F.cross_entropy(
                     aux_voxel_logits_b,
                     voxel_labels,
                     ignore_index=0,
                 )
                 
-        L = torch.stack(block_outputs, dim=1)
-        N_valid, B, C = L.shape
-        L_flat = L.reshape(N_valid, B * C)
-        final_logits_valid = self.final_mlp(L_flat)
+        L = torch.cat(feature_list, dim=1)
+        final_logits_valid = self.final_mlp(L)
 
         if point_labels is not None:
             ce_loss = F.cross_entropy(
