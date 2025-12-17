@@ -151,6 +151,8 @@ class AttentiveMultiScaleFusion(nn.Module):
 
         out = torch.sum(torch.stack(L, dim=-1), dim=-1)
         out = self.head(out)
+        out = torch.mul(sum_x, out)
+
         return out
 
 class SparseGeometryFeatureEnhancement(nn.Module):
@@ -229,7 +231,17 @@ class DRINetPlusPlus(nn.Module):
         feature_list = []
         aux_loss = 0.0
         F_cur = F_sparse
-        
+
+        voxel_labels = None
+ 
+        if self.training and point_labels is not None:
+            voxel_labels = make_voxel_labels_majority(
+                point2voxel=point2voxel,
+                point_labels=point_labels,
+                num_voxels=F_sparse.features.size(0),
+                ignore_index=0,
+            )
+ 
         for b, block in enumerate(self.blocks):
             F_cur, aux_voxel_logits_b = block(F_cur)
 
@@ -237,13 +249,6 @@ class DRINetPlusPlus(nn.Module):
             feature_list.append(point_features_b)
 
             if self.training and point_labels is not None:
-                voxel_labels = make_voxel_labels_majority(
-                    point2voxel=point2voxel,
-                    point_labels=point_labels,
-                    num_voxels=aux_voxel_logits_b.size(0),
-                    ignore_index=0,
-                )
-
                 aux_loss += F.cross_entropy(
                     aux_voxel_logits_b,
                     voxel_labels,
