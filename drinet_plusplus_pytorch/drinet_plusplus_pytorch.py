@@ -69,15 +69,6 @@ class MultiScaleSparseProjection(nn.Module):
         self.projs = nn.ModuleList()
 
         for _ in self.scales:
-            self.gates.append(
-                nn.Sequential(
-                    nn.Linear(channels, channels),
-                    nn.BatchNorm1d(channels),
-                    nn.LeakyReLU(inplace=True),
-                    nn.Linear(channels, channels),
-                    nn.Sigmoid(),
-                )
-            )
             self.projs.append(
                 nn.Sequential(
                     nn.Linear(channels, channels),
@@ -116,11 +107,10 @@ class MultiScaleSparseProjection(nn.Module):
             V_up = V[inv]
             Os = feats - V_up
 
-            gate = self.gates[i](Os)
-            gated = gate * feats
+            Os = self.projs[i](Os)
+            Os = Os * feats
 
-            Os_proj = self.projs[i](gated)    # (M,C)
-            ms_outputs.append(Os_proj)
+            ms_outputs.append(Os)
 
         ms_feat = torch.stack(ms_outputs, dim=1)  # (M,S,C_out)
         return ms_feat
@@ -151,7 +141,6 @@ class AttentiveMultiScaleFusion(nn.Module):
 
         out = torch.sum(torch.stack(L, dim=-1), dim=-1)
         out = self.head(out)
-        out = torch.mul(sum_x, out)
 
         return out
 
