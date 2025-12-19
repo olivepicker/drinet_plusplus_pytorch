@@ -48,7 +48,7 @@ class SemanticKITTIDataset(Dataset):
         scan = np.fromfile(velo_path, dtype=np.float32).reshape(-1, 4)
         xyz  = scan[:, :3]
         inten = scan[:, 3:4]
-        feats = inten  # or ones
+        feats = scan
 
         if label_path is not None and os.path.isfile(label_path):
             labels_u32 = np.fromfile(label_path, dtype=np.uint32).reshape(-1)
