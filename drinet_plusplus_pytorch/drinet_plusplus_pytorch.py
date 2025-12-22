@@ -64,14 +64,12 @@ class MultiScaleSparseProjection(nn.Module):
     ):
         super().__init__()
         self.scales = scales
-
-        self.gates = nn.ModuleList()
         self.projs = nn.ModuleList()
 
         for _ in self.scales:
             self.projs.append(
                 nn.Sequential(
-                    nn.Linear(channels, channels),
+                    nn.Linear(channels, channels, bias=False),
                     nn.BatchNorm1d(channels),
                     nn.LeakyReLU(inplace=True),
                 )
@@ -122,12 +120,16 @@ class AttentiveMultiScaleFusion(nn.Module):
         for _ in range(num_scales):
             self.attn.append(
                 nn.Sequential(
-                    nn.Linear(channels, channels),
+                    nn.Linear(channels, channels, bias=False),
                     nn.BatchNorm1d(channels),
                     nn.Sigmoid()
                 )
             )
-        self.head = nn.Linear(channels, channels)
+        self.head = nn.Sequential(
+            nn.Linear(channels, channels, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.LeakyReLU(inplace=True),
+        )
 
     def forward(self, x):
         sum_x = torch.sum(x, dim=1)
