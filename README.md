@@ -8,7 +8,9 @@ Unofficial implementation proposed [DRINet++](https://arxiv.org/abs/2111.08318) 
 - [ ] Test Time Augmentations
 
 ## Usage
-
+```python
+      # SemanticKitti Valid Set (w/o Pseudo-label): 0.685 (vs. Paper: 0.695) | 2025-12-29
+```
 ## Citations
 
 ```bibtex

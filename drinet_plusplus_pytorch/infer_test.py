@@ -67,7 +67,7 @@ def run_inference_and_save(
     )
 
     model = DRINetPlusPlus(
-        in_channels=1,
+        in_channels=4,
         out_channels=64,
         num_blocks=4,
         num_classes=NUM_CLASSES,
