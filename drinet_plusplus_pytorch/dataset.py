@@ -28,9 +28,24 @@ def build_label_lut(device='cpu'):
     return lut
 
 class SemanticKITTIDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, remap_labels=True):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        remap_labels: bool = True,
+        augment: bool = False,
+        rot_range = (-np.pi, np.pi),
+        scale_range = (0.95, 1.05),
+        max_dropout_ratio: float = 0.1,
+        enable_flip: bool = True,
+    ):
         self.df = df.reset_index(drop=True)
         self.remap_labels = remap_labels
+        self.augment = augment
+
+        self.rot_range = rot_range
+        self.scale_range = scale_range
+        self.max_dropout_ratio = max_dropout_ratio
+        self.enable_flip = enable_flip
 
         if remap_labels:
             self.remap_lut = build_label_lut(device='cpu')
@@ -56,13 +71,18 @@ class SemanticKITTIDataset(Dataset):
         else:
             semantic_raw = np.zeros((scan.shape[0],), dtype=np.uint32)
 
+        # np → torch
         xyz_t   = torch.from_numpy(xyz).float()
         feats_t = torch.from_numpy(feats).float()
-        sem_t = torch.from_numpy(semantic_raw).long()  # raw label (0~260...)
+        sem_t   = torch.from_numpy(semantic_raw).long()
 
+        if self.augment:
+            xyz_t, feats_t, sem_t = self._augment_points(xyz_t, feats_t, sem_t)
+
+        # label remap
         if self.remap_labels and self.remap_lut is not None:
             sem_t = sem_t.to(self.remap_lut.device)
-            sem_t = self.remap_lut[sem_t]  # raw -> train (0~19)
+            sem_t = self.remap_lut[sem_t]
 
         return {
             "points": xyz_t,        # (N,3)
@@ -71,6 +91,51 @@ class SemanticKITTIDataset(Dataset):
             "sequence": int(row["sequence"]),
             "frame": int(row["frame"]),
         }
+
+    def _augment_points(self, points, feats, labels):
+        """
+        points: (N,3) torch.tensor
+        feats:  (N,C)
+        labels: (N,)
+        """
+        N = points.shape[0]
+
+        # 1) global rotation
+        if self.rot_range is not None:
+            rot_min, rot_max = self.rot_range
+            angle = np.random.uniform(rot_min, rot_max)
+            cos_a, sin_a = np.cos(angle), np.sin(angle)
+
+            rot_mat = points.new_tensor([
+                [cos_a, -sin_a, 0.0],
+                [sin_a,  cos_a, 0.0],
+                [0.0,    0.0,   1.0],
+            ])  # (3,3)
+            points = points @ rot_mat.T
+
+        # 2) global scaling
+        if self.scale_range is not None:
+            s_min, s_max = self.scale_range
+            scale = np.random.uniform(s_min, s_max)
+            points = points * scale
+
+        # 3) random flip
+        if self.enable_flip and np.random.rand() < 0.5:
+            points[:, 1] = -points[:, 1]
+
+        # 4) random point dropout
+        if self.max_dropout_ratio is not None and self.max_dropout_ratio > 0.0:
+            drop_ratio = np.random.uniform(0.0, self.max_dropout_ratio)
+            if drop_ratio > 0:
+                keep_mask = torch.rand(N, device=points.device) > drop_ratio
+                if keep_mask.sum() < 10:
+                    keep_mask = torch.ones(N, dtype=torch.bool, device=points.device)
+
+                points = points[keep_mask]
+                feats  = feats[keep_mask]
+                labels = labels[keep_mask]
+
+        return points, feats, labels
 
 def collate_fn_full(batch, voxel_size, device="cpu"):
     all_v_feats = []

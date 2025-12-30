@@ -5,7 +5,7 @@ Unofficial implementation proposed [DRINet++](https://arxiv.org/abs/2111.08318) 
 ## Todo
 - [ ] Evaluate on the test dataset
 - [ ] Train / Inference code
-- [ ] Test Time Augmentations
+- [x] Test Time Augmentations
 
 ## Usage
 ```python

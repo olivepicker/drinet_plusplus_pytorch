@@ -7,7 +7,7 @@ import torch
 
 from tqdm.auto import tqdm
 
-from utils import voxelize, voxelize_full, build_semantickitti_index
+from utils import voxelize_full, build_semantickitti_index
 from dataset import SemanticKITTIDataset
 from drinet_plusplus_pytorch import DRINetPlusPlus
 
@@ -47,6 +47,39 @@ SEMANTICKITTI_SPLIT = {
     "test":  [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
 }
 
+
+def get_tta_transforms(device):
+    """
+    standard TTA:
+      - flip_y: False / True
+      - yaw: 0, 90, 180, 270 deg
+    """
+    angles = [0.0, 0.5 * np.pi, np.pi, 1.5 * np.pi]
+    transforms = []
+
+    for flip_y in [False, True]:
+        for a in angles:
+            c = np.cos(a)
+            s = np.sin(a)
+            R = torch.tensor([
+                [ c, -s, 0.0],
+                [ s,  c, 0.0],
+                [0.0, 0.0, 1.0],
+            ], dtype=torch.float32, device=device)
+            transforms.append((flip_y, R))
+    return transforms
+
+
+def apply_tta_transform(points, flip_y, R):
+    pts = points
+    if flip_y:
+        pts = pts.clone()
+        pts[:, 1] = -pts[:, 1] 
+
+    pts_rot = (pts @ R.T)        # (N,3)
+    return pts_rot
+
+
 def run_inference_and_save(
     root_dir: str,
     ckpt_path: str,
@@ -54,16 +87,18 @@ def run_inference_and_save(
     voxel_size = [0.2, 0.2, 0.2],
     point_range = [-50.0, -50.0, -5.0, 50.0, 50.0, 3.0],
     device = "cuda",
+    use_tta = True,
 ):
     os.makedirs(out_root, exist_ok=True)
 
     index_df = build_semantickitti_index(root_dir, SEMANTICKITTI_SPLIT)
-    test_df = index_df[index_df["split"] == "test"].reset_index(drop=True)#.sample(500)
+    test_df = index_df[index_df["split"] == "test"].reset_index(drop=True)
     print("Test samples:", len(test_df))
 
     test_dataset = SemanticKITTIDataset(
         test_df,
         remap_labels=True,
+        augment=False,
     )
 
     model = DRINetPlusPlus(
@@ -72,14 +107,16 @@ def run_inference_and_save(
         num_blocks=4,
         num_classes=NUM_CLASSES,
         scales=[2,4,8,16],
-    )
-    model = model.to(device)
+    ).to(device)
 
     ckpt = torch.load(ckpt_path, map_location=device)
     print(model.load_state_dict(ckpt["model_state"]))
     print(f"Loaded checkpoint from {ckpt_path}, epoch = {ckpt.get('epoch','?')}")
 
+    model.eval()
+
     inv_lut = build_inv_lut(device=device)
+    tta_transforms = get_tta_transforms(device) if use_tta else None
 
     with torch.no_grad():
         for idx in tqdm(range(len(test_dataset)), desc="Inference on test"):
@@ -89,38 +126,69 @@ def run_inference_and_save(
 
             points = sample["points"].to(device)   # (N,3)
             feats  = sample["feats"].to(device)    # (N,C)
-            N = points.size(0)
+            N      = points.size(0)
 
-            vox = voxelize_full(
-                points=points,
-                feats=feats,
-                voxel_size=voxel_size,
-                batch_idx=0,
-            )
+            if not use_tta:
+                vox = voxelize_full(
+                    points=points,
+                    feats=feats,
+                    voxel_size=voxel_size,
+                    batch_idx=0,
+                )
 
-            v_feats       = vox["v_feats"]          # (M,C)
-            v_coords      = vox["v_coords"]         # (M,4)
-            spatial_shape = vox["spatial_shape"]    # [Z,Y,X]
-            point2voxel   = vox["point2voxel"]      # (N_kept,)
-            point_mask    = vox["point_mask"]       # (N,)
+                v_feats       = vox["v_feats"]
+                v_coords      = vox["v_coords"]
+                spatial_shape = vox["spatial_shape"]
+                point2voxel   = vox["point2voxel"]   # (N,)
 
-            point2voxel_kept = point2voxel[point_mask] 
-            
-            sp_tensor = spconv.SparseConvTensor(
-                features      = v_feats,
-                indices       = v_coords,
-                spatial_shape = spatial_shape,
-                batch_size    = 1,
-            )
+                sp_tensor = spconv.SparseConvTensor(
+                    features      = v_feats,
+                    indices       = v_coords,
+                    spatial_shape = spatial_shape,
+                    batch_size    = 1,
+                )
 
-            # forward
-            logits = model(sp_tensor, point2voxel_kept)   # (N_kept, num_classes)
-            preds_train = logits.argmax(dim=1)       # (N_kept,)
+                logits = model(sp_tensor, point2voxel)   # (N, num_classes)
+                preds_train = logits.argmax(dim=1)       # (N,)
 
-            preds_full_train = torch.zeros(N, dtype=torch.long, device=device)
-            preds_full_train[point_mask] = preds_train
+            else:
+                logits_accum = torch.zeros(
+                    (N, NUM_CLASSES),
+                    dtype=torch.float32,
+                    device=device,
+                )
+                num_tta = 0
 
-            preds_full_raw = inv_lut[preds_full_train]  # (N,)
+                for flip_y, R in tta_transforms:
+                    pts_aug = apply_tta_transform(points, flip_y, R)
+
+                    vox = voxelize_full(
+                        points=pts_aug,
+                        feats=feats,
+                        voxel_size=voxel_size,
+                        batch_idx=0,
+                    )
+
+                    v_feats       = vox["v_feats"]
+                    v_coords      = vox["v_coords"]
+                    spatial_shape = vox["spatial_shape"]
+                    point2voxel   = vox["point2voxel"]   # (N,)
+
+                    sp_tensor = spconv.SparseConvTensor(
+                        features      = v_feats,
+                        indices       = v_coords,
+                        spatial_shape = spatial_shape,
+                        batch_size    = 1,
+                    )
+
+                    logits_t = model(sp_tensor, point2voxel)  # (N, num_classes)
+                    logits_accum += logits_t
+                    num_tta += 1
+
+                logits = logits_accum / max(num_tta, 1)
+                preds_train = logits.argmax(dim=1)   # (N,)
+
+            preds_full_raw = inv_lut[preds_train]  # (N,)
 
             sem = preds_full_raw.cpu().numpy().astype(np.uint32)
             inst = np.zeros_like(sem, dtype=np.uint32)
