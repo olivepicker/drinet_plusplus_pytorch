@@ -74,6 +74,17 @@ class MultiScaleSparseProjection(nn.Module):
                     nn.LeakyReLU(inplace=True),
                 )
             )
+            
+        self.mlp = nn.ModuleList()
+
+        for _ in self.scales:
+            self.mlp.append(
+                nn.Sequential(
+                    nn.Linear(channels, channels, bias=False),
+                    nn.BatchNorm1d(channels),
+                    nn.LeakyReLU(inplace=True),
+                )
+            )
 
     def forward(self, x: spconv.SparseConvTensor):
         feats   = x.features      # (M,C)
@@ -108,7 +119,7 @@ class MultiScaleSparseProjection(nn.Module):
             Os = self.projs[i](Os)
             Os = Os * feats
 
-            ms_outputs.append(Os)
+            ms_outputs.append(self.mlp[i](Os))
 
         ms_feat = torch.stack(ms_outputs, dim=1)  # (M,S,C_out)
         return ms_feat
