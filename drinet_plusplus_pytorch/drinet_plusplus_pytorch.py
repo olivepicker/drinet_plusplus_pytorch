@@ -275,7 +275,7 @@ class DRINetPlusPlus(nn.Module):
             )
 
             final_loss = ce_loss + lovasz_loss
-            total_loss = final_loss + self.aux_loss_ratio * aux_loss
+            total_loss = final_loss + (aux_loss / self.num_blocks) * self.aux_loss_ratio
             return final_logits_valid, total_loss
 
         return final_logits_valid
