@@ -71,7 +71,7 @@ class MultiScaleSparseProjection(nn.Module):
                 nn.Sequential(
                     nn.Linear(channels, channels, bias=False),
                     nn.BatchNorm1d(channels),
-                    nn.LeakyReLU(inplace=True),
+                    nn.Sigmoid(),
                 )
             )
             
@@ -247,8 +247,8 @@ class DRINetPlusPlus(nn.Module):
         for b, block in enumerate(self.blocks):
             F_cur, aux_voxel_logits_b = block(F_cur)
 
-            point_features_b = F_cur.features[point2voxel]
-            feature_list.append(point_features_b)
+            #point_features_b = F_cur.features[point2voxel]
+            feature_list.append(F_cur.features)
 
             if self.training and point_labels is not None:
                 aux_loss += F.cross_entropy(
@@ -256,26 +256,29 @@ class DRINetPlusPlus(nn.Module):
                     voxel_labels,
                     ignore_index=0,
                 )
-                
-        L = torch.cat(feature_list, dim=1)
-        final_logits_valid = self.final_mlp(L)
 
-        if point_labels is not None:
+        aux_loss = aux_loss / len(self.blocks) if self.training else 0.
+        L = torch.cat(feature_list, dim=1)
+
+        voxel_logits = self.final_mlp(L)
+        point_logits = voxel_logits[point2voxel] 
+
+        if point_labels is not None and voxel_labels is not None:
             ce_loss = F.cross_entropy(
-                final_logits_valid,
-                point_labels,
+                voxel_logits,
+                voxel_labels,
                 ignore_index=0,
             )
 
-            probs = F.softmax(final_logits_valid, dim=1)
+            probs = F.softmax(voxel_logits, dim=1)
             lovasz_loss = lovasz_softmax(
                 probs,
-                point_labels,
+                voxel_labels,
                 ignore_index=0,
             )
 
             final_loss = ce_loss + lovasz_loss
-            total_loss = final_loss + (aux_loss / self.num_blocks) * self.aux_loss_ratio
-            return final_logits_valid, total_loss
+            total_loss = final_loss + aux_loss * self.aux_loss_ratio
+            return point_logits, total_loss
 
-        return final_logits_valid
+        return point_logits

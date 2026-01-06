@@ -7,7 +7,7 @@ import torch
 
 from tqdm.auto import tqdm
 
-from utils import voxelize_full, build_semantickitti_index
+from utils import voxelize, build_semantickitti_index
 from dataset import SemanticKITTIDataset
 from drinet_plusplus_pytorch import DRINetPlusPlus
 
@@ -70,15 +70,30 @@ def get_tta_transforms(device):
     return transforms
 
 
-def apply_tta_transform(points, flip_y, R):
+def apply_tta_transform(points, feats, flip_y, R):
+    """
+    points: (N, 3)
+    feats : (N, 4)  # [x,y,z,intensity] 라고 가정
+    """
     pts = points
+    f   = feats
+
+    # flip_y: train augmentation에서 y축 flip 쓰던 것과 동일하게
     if flip_y:
         pts = pts.clone()
-        pts[:, 1] = -pts[:, 1] 
+        pts[:, 1] = -pts[:, 1]
 
-    pts_rot = (pts @ R.T)        # (N,3)
-    return pts_rot
+        f = f.clone()
+        f[:, 1] = -f[:, 1]        # xyz 부분도 같이 뒤집기
 
+    # z축 회전
+    pts_rot = pts @ R.T          # (N,3)
+
+    # feats도 xyz 부분을 동일하게 회전
+    f_rot = f.clone()
+    f_rot[:, :3] = pts_rot       # [x,y,z] 부분 교체, intensity는 그대로 유지
+
+    return pts_rot, f_rot
 
 def run_inference_and_save(
     root_dir: str,
@@ -129,17 +144,19 @@ def run_inference_and_save(
             N      = points.size(0)
 
             if not use_tta:
-                vox = voxelize_full(
+                vox = voxelize(
                     points=points,
                     feats=feats,
                     voxel_size=voxel_size,
+                    point_range=point_range,
                     batch_idx=0,
                 )
 
                 v_feats       = vox["v_feats"]
                 v_coords      = vox["v_coords"]
                 spatial_shape = vox["spatial_shape"]
-                point2voxel   = vox["point2voxel"]   # (N,)
+                point2voxel   = vox["point2voxel"]   # (N_kept,)
+                point_mask    = vox["point_mask"]    # (N_raw,)
 
                 sp_tensor = spconv.SparseConvTensor(
                     features      = v_feats,
@@ -160,19 +177,21 @@ def run_inference_and_save(
                 num_tta = 0
 
                 for flip_y, R in tta_transforms:
-                    pts_aug = apply_tta_transform(points, flip_y, R)
+                    pts_aug, feats_aug = apply_tta_transform(points, feats, flip_y, R)
 
-                    vox = voxelize_full(
+                    vox = voxelize(
                         points=pts_aug,
-                        feats=feats,
+                        feats=feats_aug,
                         voxel_size=voxel_size,
+                        point_range=point_range,
                         batch_idx=0,
                     )
 
                     v_feats       = vox["v_feats"]
                     v_coords      = vox["v_coords"]
                     spatial_shape = vox["spatial_shape"]
-                    point2voxel   = vox["point2voxel"]   # (N,)
+                    point2voxel   = vox["point2voxel"]   # (N_kept,)
+                    point_mask    = vox["point_mask"]    # (N_raw,)
 
                     sp_tensor = spconv.SparseConvTensor(
                         features      = v_feats,
@@ -206,7 +225,7 @@ def run_inference_and_save(
 
 if __name__ == '__main__':
     root_dir  = "data/dataset/"
-    ckpt_path = "weight/drinetpp_best_mIoU.pth"
+    ckpt_path = "drinet_plusplus_pytorch/drinetpp_best_mIoU.pth"
     out_root  = "data/output/"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -218,4 +237,5 @@ if __name__ == '__main__':
         voxel_size=[0.2, 0.2, 0.2],
         point_range=[-50.0, -50.0, -5.0, 50.0, 50.0, 3.0],
         device=device,
+        use_tta=False
     )

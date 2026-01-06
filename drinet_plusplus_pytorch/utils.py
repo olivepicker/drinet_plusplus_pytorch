@@ -48,6 +48,10 @@ def voxelize(points, feats, voxel_size, point_range, batch_idx: int = 0):
         [batch_col, unique_coords.to(torch.int32)], dim=1
     )  # (M,4)
 
+    N = points.size(0)
+    point2voxel_full = torch.full((N,), -1, dtype=torch.long, device=device)
+    point2voxel_full[valid_mask] = point2voxel
+    
     return {
         "v_feats": v_feats,             # (M,C)
         "v_coords": v_coords,           # (M,4) [b,z,y,x]
