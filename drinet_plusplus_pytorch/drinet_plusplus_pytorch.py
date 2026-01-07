@@ -234,15 +234,15 @@ class DRINetPlusPlus(nn.Module):
         aux_loss = 0.0
         F_cur = F_sparse
 
-        voxel_labels = None
- 
-        if self.training and point_labels is not None:
+        if point_labels is not None:
             voxel_labels = make_voxel_labels_majority(
                 point2voxel=point2voxel,
                 point_labels=point_labels,
                 num_voxels=F_sparse.features.size(0),
                 ignore_index=0,
             )
+        else:
+            voxel_labels = None
  
         for b, block in enumerate(self.blocks):
             F_cur, aux_voxel_logits_b = block(F_cur)
@@ -257,13 +257,19 @@ class DRINetPlusPlus(nn.Module):
                     ignore_index=0,
                 )
 
+                aux_loss += lovasz_softmax(
+                    aux_voxel_logits_b,
+                    voxel_labels,
+                    ignore_index=0,
+                )
+
         aux_loss = aux_loss / len(self.blocks) if self.training else 0.
         L = torch.cat(feature_list, dim=1)
 
         voxel_logits = self.final_mlp(L)
         point_logits = voxel_logits[point2voxel] 
 
-        if point_labels is not None and voxel_labels is not None:
+        if voxel_labels is not None:
             ce_loss = F.cross_entropy(
                 voxel_logits,
                 voxel_labels,

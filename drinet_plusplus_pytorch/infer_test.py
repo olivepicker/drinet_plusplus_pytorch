@@ -167,6 +167,9 @@ def run_inference_and_save(
 
                 logits = model(sp_tensor, point2voxel)   # (N, num_classes)
                 preds_train = logits.argmax(dim=1)       # (N,)
+                preds_full = torch.zeros(N, dtype=torch.long, device=device)
+                preds_full[point_mask] = preds_train
+                preds_train = preds_full
 
             else:
                 logits_accum = torch.zeros(
@@ -235,7 +238,7 @@ if __name__ == '__main__':
         ckpt_path=ckpt_path,
         out_root=out_root,
         voxel_size=[0.2, 0.2, 0.2],
-        point_range=[-50.0, -50.0, -5.0, 50.0, 50.0, 3.0],
+        point_range=[-48., -48., -3.0, 48.,  48.,  1.8],
         device=device,
         use_tta=False
     )
