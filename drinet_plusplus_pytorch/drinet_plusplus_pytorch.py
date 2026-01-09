@@ -198,7 +198,7 @@ class DRINetPlusPlus(nn.Module):
         num_blocks=4, 
         num_classes=20, 
         scales=[2,4,8,16],
-        aux_loss_ratio=0.4
+        aux_loss_ratio=0.2
     ):
         super().__init__()
         self.num_blocks  = num_blocks
@@ -226,15 +226,14 @@ class DRINetPlusPlus(nn.Module):
         F_sparse = self.stem(x)
         N_valid = point2voxel.size(0)
 
-        if point_labels is not None:
-            assert point_labels.size(0) == N_valid, \
-                f"point_labels({point_labels.size(0)}) and point2voxel({N_valid}) must have same length."
-
         feature_list = []
         aux_loss = 0.0
         F_cur = F_sparse
 
         if point_labels is not None:
+            assert point_labels.size(0) == N_valid, \
+                f"point_labels({point_labels.size(0)}) and point2voxel({N_valid}) must have same length."
+
             voxel_labels = make_voxel_labels_majority(
                 point2voxel=point2voxel,
                 point_labels=point_labels,
@@ -252,12 +251,6 @@ class DRINetPlusPlus(nn.Module):
 
             if self.training and point_labels is not None:
                 aux_loss += F.cross_entropy(
-                    aux_voxel_logits_b,
-                    voxel_labels,
-                    ignore_index=0,
-                )
-
-                aux_loss += lovasz_softmax(
                     aux_voxel_logits_b,
                     voxel_labels,
                     ignore_index=0,
